@@ -68,18 +68,49 @@ async fn main() {
     //    traiter la commande, envoyer la réponse JSON + '\n'
     loop {
         let (socket, addr) = listener.accept().await.unwrap();
-        tracing::info!("Nouveau client: {}", addr);
         let store = store.clone();
         tokio::spawn(async move {
             handle_client(socket, store).await;
         });
-    }
+    }    
     // println!("MiniRedis - à implémenter !");
 }
 
 async fn handle_client(socket: TcpStream, store: Store) {
     let (read_half, mut write_half) = socket.into_split();
     let mut reader = BufReader::new(read_half);
-    let mut line = String::new();   
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read = match reader.read_line(&mut line).await {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        let response = process_command(&line, &store).await;
+        let response_str = serde_json::to_string(&response).unwrap() + "\n";
+        if write_half.write_all(response_str.as_bytes()).await.is_err() {
+            break;
+        }
+    }
 }
 
+
+/// Parse la requête JSON et exécute la commande correspondante
+async fn process_command(line: &str, store: &Store) -> serde_json::Value {
+    let req: Request = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(_) => return json!({"status": "error", "message": "invalid json"}),
+    };
+
+    match req.cmd.as_str() {
+        "PING" => json!({"status": "ok"}),
+
+        _ => json!({"status": "error", "message": "unknown command"}),
+    }
+}
