@@ -9,17 +9,16 @@ use tokio::time::{interval, Duration};
 use tokio::io::{AsyncBufReadExt, BufReader, AsyncWriteExt};
 
 
-// Structure suggérée pour l'état partagé :
+// store partagé entre les tâches
 type Store = Arc<Mutex<HashMap<String, Entry>>>;
 
-/// Une entrée du store : valeur + expiration optionnelle.
 #[derive(Clone)]
 struct Entry {
     value: String,
     expires_at: Option<Instant>,
 }
 
-/// Structure pour parser les requêtes JSON des clients.
+// pour deserialiser les requetes json
 #[derive(Deserialize)]
 struct Request {
     cmd: String,
@@ -39,16 +38,12 @@ async fn main() {
         )
         .init();
 
-    // TODO: Implémenter le serveur MiniRedis sur 127.0.0.1:7878
-    //
-    // Étapes suggérées :
-    // 1. Créer le store partagé (Arc<Mutex<HashMap<String, ...>>>)
     let store: Store = Arc::new(Mutex::new(HashMap::new()));
 
-    // 2. Bind un TcpListener sur 127.0.0.1:7878
     let listener = TcpListener::bind("127.0.0.1:7878").await.unwrap();
     tracing::info!("Serveur MiniRedis lancé sur 127.0.0.1:7878");
-    // 3. Accept loop : pour chaque connexion, spawn une tâche
+
+    // tache de fond pour nettoyer les clés expirées
     let cleanup_store = store.clone();
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(1));
@@ -63,17 +58,14 @@ async fn main() {
         }
     });
 
-
-    // 4. Dans chaque tâche : lire les requêtes JSON ligne par ligne,
-    //    traiter la commande, envoyer la réponse JSON + '\n'
+    // accept loop
     loop {
-        let (socket, addr) = listener.accept().await.unwrap();
+        let (socket, _addr) = listener.accept().await.unwrap();
         let store = store.clone();
         tokio::spawn(async move {
             handle_client(socket, store).await;
         });
-    }    
-    // println!("MiniRedis - à implémenter !");
+    }
 }
 
 async fn handle_client(socket: TcpStream, store: Store) {
@@ -101,7 +93,7 @@ async fn handle_client(socket: TcpStream, store: Store) {
 }
 
 
-/// Parse la requête JSON et exécute la commande correspondante
+// traite une commande reçue en json
 async fn process_command(line: &str, store: &Store) -> serde_json::Value {
     let req: Request = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -111,6 +103,44 @@ async fn process_command(line: &str, store: &Store) -> serde_json::Value {
     match req.cmd.as_str() {
         "PING" => json!({"status": "ok"}),
 
+        "SET" => {
+            if req.key.is_none() {
+                return json!({"status": "error", "message": "missing key"});
+            }
+            if req.value.is_none() {
+                return json!({"status": "error", "message": "missing value"});
+            }
+            let key = req.key.unwrap();
+            let val = req.value.unwrap();
+            let mut s = store.lock().await;
+            s.insert(key, Entry { value: val, expires_at: None });
+            json!({"status": "ok"})
+        }
+
+        "GET" => {
+            if let Some(ref key) = req.key {
+                let store = store.lock().await;
+                let val = store.get(key).map(|e| e.value.clone());
+                json!({"status": "ok", "value": val})
+            } else {
+                json!({"status": "error", "message": "missing key"})
+            }
+        }
+
+        "DEL" => {
+            let key = match &req.key {
+                Some(k) => k,
+                None => return json!({"status": "error", "message": "missing key"}),
+            };
+            let mut store = store.lock().await;
+            let removed = store.remove(key).is_some();
+            json!({"status": "ok", "count": if removed { 1 } else { 0 }})
+        }
+
+
         _ => json!({"status": "error", "message": "unknown command"}),
     }
 }
+
+#[cfg(test)]
+mod test;
