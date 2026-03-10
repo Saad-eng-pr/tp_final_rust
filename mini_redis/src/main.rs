@@ -237,6 +237,19 @@ async fn process_command(line: &str, store: &Store) -> serde_json::Value {
             json!({"status": "ok", "value": new_val})
         }
 
+        // sauvegarde le store dans un fichier json
+        "SAVE" => {
+            let store = store.lock().await;
+            let mut data = HashMap::new();
+            for (k, v) in store.iter() {
+                data.insert(k.clone(), v.value.clone());
+            }
+            let json_str = serde_json::to_string(&data).unwrap();
+            if let Err(e) = tokio::fs::write("dump.json", json_str).await {
+                return json!({"status": "error", "message": e.to_string()});
+            }
+            json!({"status": "ok"})
+        }
 
         _ => json!({"status": "error", "message": "unknown command"}),
     }
