@@ -168,7 +168,51 @@ async fn process_command(line: &str, store: &Store) -> serde_json::Value {
             }
         }
 
-        
+        "TTL" => {
+            let key = match &req.key {
+                Some(k) => k,
+                None => return json!({"status": "error", "message": "missing key"}),
+            };
+            let store = store.lock().await;
+            match store.get(key) {
+                None => json!({"status": "ok", "ttl": -2}),
+                Some(entry) => match entry.expires_at {
+                    None => json!({"status": "ok", "ttl": -1}),
+                    Some(exp) => {
+                        let now = Instant::now();
+                        if exp > now {
+                            let remaining = (exp - now).as_secs() as i64;
+                            json!({"status": "ok", "ttl": remaining})
+                        } else {
+                            json!({"status": "ok", "ttl": -2})
+                        }
+                    }
+                },
+            }
+        }
+
+        "INCR" => {
+            let key = match &req.key {
+                Some(k) => k.clone(),
+                None => return json!({"status": "error", "message": "missing key"}),
+            };
+            let mut store = store.lock().await;
+            let new_val = match store.get(&key) {
+                Some(entry) => match entry.value.parse::<i64>() {
+                    Ok(n) => n + 1,
+                    Err(_) => return json!({"status": "error", "message": "not an integer"}),
+                },
+                None => 1,
+            };
+            store.insert(
+                key,
+                Entry {
+                    value: new_val.to_string(),
+                    expires_at: None,
+                },
+            );
+            json!({"status": "ok", "value": new_val})
+        }
 
         _ => json!({"status": "error", "message": "unknown command"}),
     }
