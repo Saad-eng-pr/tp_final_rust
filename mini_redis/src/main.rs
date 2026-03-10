@@ -38,11 +38,19 @@ async fn main() {
         )
         .init();
 
+    // TODO: Implémenter le serveur MiniRedis sur 127.0.0.1:7878
+    //
+    // Étapes suggérées :
+    // 1. Créer le store partagé (Arc<Mutex<HashMap<String, ...>>>)    
     let store: Store = Arc::new(Mutex::new(HashMap::new()));
-
+    
+    // 2. Bind un TcpListener sur 127.0.0.1:7878
     let listener = TcpListener::bind("127.0.0.1:7878").await.unwrap();
     tracing::info!("Serveur MiniRedis lancé sur 127.0.0.1:7878");
 
+    // 3. Accept loop : pour chaque connexion, spawn une tâche
+    // 4. Dans chaque tâche : lire les requêtes JSON ligne par ligne,
+    //    traiter la commande, envoyer la réponse JSON + '\n'
     // tache de fond pour nettoyer les clés expirées
     let cleanup_store = store.clone();
     tokio::spawn(async move {
@@ -66,6 +74,8 @@ async fn main() {
             handle_client(socket, store).await;
         });
     }
+
+    // println!("MiniRedis - à implémenter !");
 }
 
 async fn handle_client(socket: TcpStream, store: Store) {
@@ -137,6 +147,28 @@ async fn process_command(line: &str, store: &Store) -> serde_json::Value {
             json!({"status": "ok", "count": if removed { 1 } else { 0 }})
         }
 
+        "KEYS" => {
+            let store = store.lock().await;
+            let keys: Vec<String> = store.keys().cloned().collect();
+            json!({"status": "ok", "keys": keys})
+        }
+
+        "EXPIRE" => {
+            if req.key.is_none() || req.seconds.is_none() {
+                return json!({"status": "error", "message": if req.key.is_none() { "missing key" } else { "missing seconds" }});
+            }
+            let key = req.key.as_ref().unwrap();
+            let secs = req.seconds.unwrap();
+            let mut store = store.lock().await;
+            if let Some(entry) = store.get_mut(key) {
+                entry.expires_at = Some(Instant::now() + Duration::from_secs(secs));
+                json!({"status": "ok"})
+            } else {
+                json!({"status": "error", "message": "key not found"})
+            }
+        }
+
+        
 
         _ => json!({"status": "error", "message": "unknown command"}),
     }
